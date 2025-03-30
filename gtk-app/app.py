@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import gi, subprocess, time, sys, os, configparser
+import gi, subprocess, time, sys, os, configparser, json
 gi.require_version("Gtk", "3.0")
 gi.require_version("Wnck", "3.0")
 gi.require_version("GdkX11", "3.0")
@@ -7,45 +7,76 @@ from gi.repository import Gtk, GdkPixbuf, Gdk, Wnck, GdkX11
 
 def load_config():
     config = configparser.ConfigParser()
-    # If a config file path is provided as a command-line argument, use it.
     if len(sys.argv) > 1:
         config_file = sys.argv[1]
     else:
         home = os.path.expanduser("~")
         config_file = os.path.join(home, ".config", "smartscreenshot", "smartscreenshot.ini")
-    # Create the config directory if it doesn't exist.
     os.makedirs(os.path.dirname(config_file), exist_ok=True)
-    # If the file exists, read it; otherwise, create default settings.
     if os.path.exists(config_file):
         config.read(config_file)
     else:
         config["General"] = {
-            "override_width": "",           # Leave blank to use actual resolution.
+            "override_width": "",
             "override_height": "",
-            "main_border_width": "10",      # Default border width.
-            "thumbnail_scale_divisor": "4", # Use screen_width // 4 for thumbnails.
-            "global_preview_scale_fraction": "0.5"  # Use half the screen width for preview.
+            "main_border_width": "10",
+            "thumbnail_scale_divisor": "4",
+            "global_preview_scale_fraction": "0.5",
+            "container_border": "2",
+            "capture_delay": "0.5",
+            "scripts_config": os.path.join(os.path.expanduser("~"), ".config", "smartscreenshot", "scripts.json")
         }
         with open(config_file, "w") as f:
             config.write(f)
+    if "container_border" not in config["General"]:
+        config["General"]["container_border"] = "2"
+    if "capture_delay" not in config["General"]:
+        config["General"]["capture_delay"] = "0.5"
+    if "scripts_config" not in config["General"]:
+        config["General"]["scripts_config"] = os.path.join(os.path.expanduser("~"), ".config", "smartscreenshot", "scripts.json")
     return config, config_file
+
+def load_scripts_config(config):
+    scripts_path = config["General"].get("scripts_config")
+    if not os.path.exists(scripts_path):
+        default_scripts = {
+            "scripts": [
+                {
+                    "name": "Generic Script",
+                    "path": "process_image.py",
+                    "parameters": [
+                        {"label": "Custom Parameter", "default": "1.0"}
+                    ]
+                }
+            ]
+        }
+        os.makedirs(os.path.dirname(scripts_path), exist_ok=True)
+        with open(scripts_path, "w") as f:
+            json.dump(default_scripts, f, indent=4)
+        return default_scripts
+    else:
+        with open(scripts_path, "r") as f:
+            try:
+                scripts_conf = json.load(f)
+            except json.JSONDecodeError:
+                scripts_conf = {"scripts": []}
+        return scripts_conf
 
 class ScreenshotApp(Gtk.Window):
     def __init__(self):
         super().__init__(title="Screenshot App")
-        
-        # Load configuration.
+        self.set_default_size(1000, 700)
+
         self.config, self.config_file = load_config()
         print(f"Using config file: {self.config_file}")
-        
-        # Get system resolution from primary monitor.
+        self.scripts_conf = load_scripts_config(self.config)
+
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor()
         geometry = monitor.get_geometry()
         system_width = geometry.width
         system_height = geometry.height
-        
-        # Check for override settings.
+
         try:
             override_width = int(self.config["General"].get("override_width", ""))
             override_height = int(self.config["General"].get("override_height", ""))
@@ -56,65 +87,68 @@ class ScreenshotApp(Gtk.Window):
             self.screen_height = system_height
 
         print(f"Using resolution: {self.screen_width} x {self.screen_height}")
-        
-        # Get main border width from config.
+
         try:
             self.main_border_width = int(self.config["General"].get("main_border_width", "10"))
         except ValueError:
             self.main_border_width = 10
-        
-        # Get thumbnail scale divisor (for window list thumbnails).
+
         try:
             self.thumb_divisor = int(self.config["General"].get("thumbnail_scale_divisor", "4"))
             if self.thumb_divisor <= 0:
                 self.thumb_divisor = 4
         except ValueError:
             self.thumb_divisor = 4
-        
-        # Get global preview scale fraction.
+
         try:
             self.preview_fraction = float(self.config["General"].get("global_preview_scale_fraction", "0.5"))
             if self.preview_fraction <= 0 or self.preview_fraction > 1:
                 self.preview_fraction = 0.5
         except ValueError:
             self.preview_fraction = 0.5
-        
-        # Set window size to half of the (configured) resolution.
+
+        try:
+            self.container_border = int(self.config["General"].get("container_border", "2"))
+        except ValueError:
+            self.container_border = 2
+
+        try:
+            self.capture_delay = float(self.config["General"].get("capture_delay", "0.5"))
+        except ValueError:
+            self.capture_delay = 0.5
+
         self.set_default_size(self.screen_width // 2, self.screen_height // 2)
-        
-        # Global buffer for last captured screenshot and its name.
+
         self.last_pixbuf = None
         self.last_capture_name = "None"
-        
-        # Create a Notebook (tabs) as the main container.
+
         notebook = Gtk.Notebook()
         self.add(notebook)
-        
+
         # --- Tab: Window Capture ---
         window_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         window_box.set_border_width(self.main_border_width)
-        
-        # Buttons area.
+        window_frame = Gtk.Frame()
+        window_frame.set_shadow_type(Gtk.ShadowType.IN)
+        window_frame.set_border_width(self.container_border)
+        window_frame.add(window_box)
+
         button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         window_box.pack_start(button_box, False, False, 0)
-        
-        # Capture Full Screen button.
+
         capture_full_btn = Gtk.Button(label="Capture Full Screen")
         capture_full_btn.connect("clicked", self.on_capture_full_clicked)
         button_box.pack_start(capture_full_btn, False, False, 0)
-        
-        # Refresh Window List button.
+
         refresh_btn = Gtk.Button(label="Refresh Window List")
         refresh_btn.connect("clicked", lambda b: self.populate_window_list())
         button_box.pack_start(refresh_btn, False, False, 0)
-        
-        # Scrolled window for the list of windows.
+
         scrolled_list = Gtk.ScrolledWindow()
         scrolled_list.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_list.set_min_content_height(self.screen_height // 2)
         window_box.pack_start(scrolled_list, True, True, 0)
-        
-        # FlowBox to layout window "cards" (2 per row).
+
         self.flowbox = Gtk.FlowBox()
         self.flowbox.set_valign(Gtk.Align.START)
         self.flowbox.set_max_children_per_line(2)
@@ -123,15 +157,13 @@ class ScreenshotApp(Gtk.Window):
         self.flowbox.set_column_spacing(10)
         scrolled_list.add(self.flowbox)
         self.populate_window_list()
-        
-        notebook.append_page(window_box, Gtk.Label(label="Window Capture"))
-        
+
+        notebook.append_page(window_frame, Gtk.Label(label="Window Capture"))
+
         # --- Tab: Scripts ---
-        # Use a vertical Paned widget to split space equally.
         script_paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
         script_paned.connect("size-allocate", self.on_script_paned_allocate)
-        
-        # Top pane: script sections.
+
         self.script_flow = Gtk.FlowBox()
         self.script_flow.set_valign(Gtk.Align.START)
         self.script_flow.set_max_children_per_line(2)
@@ -141,76 +173,87 @@ class ScreenshotApp(Gtk.Window):
         scrolled_scripts = Gtk.ScrolledWindow()
         scrolled_scripts.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_scripts.add(self.script_flow)
-        script_paned.pack1(scrolled_scripts, True, False)
-        
-        # Add sample script sections.
-        generic_section = self.create_script_section(
-            script_title="Generic Script",
-            script_name="process_image.py",
-            parameters=[("Brightness", "1.0")]
-        )
-        ocr_section = self.create_script_section(
-            script_title="OCR Script",
-            script_name="ocr_script.py",
-            parameters=[("Language", "eng"), ("Confidence", "0.8")]
-        )
-        self.script_flow.add(generic_section)
-        self.script_flow.add(ocr_section)
-        
-        # Bottom pane: Global preview area.
+
+        # Wrap script sections and add a button to preview processed image.
+        script_top_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        script_top_box.pack_start(scrolled_scripts, True, True, 0)
+        preview_proc_btn = Gtk.Button(label="Preview Processed Image")
+        preview_proc_btn.connect("clicked", self.on_preview_processed)
+        script_top_box.pack_start(preview_proc_btn, False, False, 0)
+        script_paned.pack1(script_top_box, True, False)
+
+        # Load script sections from the separate JSON file.
+        scripts = self.scripts_conf.get("scripts", [])
+        if not scripts:
+            scripts = [{
+                "name": "Generic Script",
+                "path": "process_image.py",
+                "parameters": [{"label": "Brightness", "default": "1.0"}]
+            }]
+        for script in scripts:
+            name = script.get("name", "Unnamed Script")
+            path = script.get("path", "")
+            params_list = script.get("parameters", [])
+            parameters = []
+            for param in params_list:
+                label = param.get("label", "Param")
+                default = param.get("default", "")
+                parameters.append((label, default))
+            section = self.create_script_section(script_title=name, script_name=path, parameters=parameters)
+            self.script_flow.add(section)
+
         preview_scrolled = Gtk.ScrolledWindow()
         preview_scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        
         preview_frame = Gtk.Frame(label="Last Captured Image")
         preview_frame.set_shadow_type(Gtk.ShadowType.IN)
         preview_frame.set_margin_top(10)
         preview_scrolled.add(preview_frame)
-        
         preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         preview_box.set_border_width(self.main_border_width)
         preview_frame.add(preview_box)
-        
         self.last_capture_label = Gtk.Label(label="No capture yet")
         self.last_capture_label.set_xalign(0)
         preview_box.pack_start(self.last_capture_label, False, False, 0)
-        
         self.global_preview = Gtk.Image()
         self.global_preview.set_hexpand(True)
         self.global_preview.set_vexpand(True)
         preview_box.pack_start(self.global_preview, True, True, 0)
-        
         script_paned.pack2(preview_scrolled, False, False)
         notebook.append_page(script_paned, Gtk.Label(label="Scripts"))
-        
+
         self.show_all()
 
     def on_script_paned_allocate(self, widget, allocation):
         widget.set_position(allocation.height // 2)
 
     def create_script_section(self, script_title, script_name, parameters):
-        section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        section.set_border_width(self.main_border_width)
+        section_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        section_box.set_border_width(self.main_border_width)
         title_label = Gtk.Label()
         title_label.set_markup(f"<b>{script_title}</b>")
         title_label.set_xalign(0)
-        section.pack_start(title_label, False, False, 0)
-        
+        section_box.pack_start(title_label, False, False, 0)
+
         grid = Gtk.Grid(column_spacing=10, row_spacing=10)
-        section.pack_start(grid, False, False, 0)
-        section.param_entries = []
+        section_box.pack_start(grid, False, False, 0)
+        section_box.param_entries = []
         for i, (param_label, default) in enumerate(parameters):
             lbl = Gtk.Label(label=param_label + ":")
             lbl.set_xalign(1)
             entry = Gtk.Entry()
             entry.set_text(default)
-            section.param_entries.append(entry)
+            section_box.param_entries.append(entry)
             grid.attach(lbl, 0, i, 1, 1)
             grid.attach(entry, 1, i, 1, 1)
-        
+
         btn = Gtk.Button(label=f"Run {script_title}")
-        btn.connect("clicked", self.on_run_script, script_name, section)
-        section.pack_start(btn, False, False, 0)
-        return section
+        btn.connect("clicked", self.on_run_script, script_name, section_box)
+        section_box.pack_start(btn, False, False, 0)
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.set_border_width(self.container_border)
+        frame.add(section_box)
+        return frame
 
     def update_global_preview(self, pixbuf, capture_name):
         self.last_pixbuf = pixbuf
@@ -231,17 +274,14 @@ class ScreenshotApp(Gtk.Window):
         content_area.set_hexpand(True)
         content_area.set_vexpand(True)
         dialog.original_pixbuf = pixbuf
-        
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         container.set_hexpand(True)
         container.set_vexpand(True)
         content_area.add(container)
-        
         image = Gtk.Image.new_from_pixbuf(pixbuf)
         image.set_hexpand(True)
         image.set_vexpand(True)
         container.pack_start(image, True, True, 0)
-        
         def on_size_allocate(widget, allocation):
             orig = dialog.original_pixbuf
             if orig:
@@ -250,7 +290,6 @@ class ScreenshotApp(Gtk.Window):
                 scaled = orig.scale_simple(new_width, new_height, GdkPixbuf.InterpType.HYPER)
                 image.set_from_pixbuf(scaled)
         container.connect("size-allocate", on_size_allocate)
-        
         dialog.show_all()
         return dialog
 
@@ -258,7 +297,7 @@ class ScreenshotApp(Gtk.Window):
         self.hide()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
-        time.sleep(0.5)
+        time.sleep(self.capture_delay)
         root_window = Gdk.get_default_root_window()
         width = root_window.get_width()
         height = root_window.get_height()
@@ -282,10 +321,15 @@ class ScreenshotApp(Gtk.Window):
             if title and not win.is_minimized():
                 xid = win.get_xid()
                 vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+                card_frame = Gtk.Frame()
+                card_frame.set_shadow_type(Gtk.ShadowType.IN)
+                card_frame.set_border_width(self.container_border)
+                inner_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+                card_frame.add(inner_box)
                 btn = Gtk.Button(label=title)
                 btn.xid = xid
                 btn.connect("clicked", self.on_window_button_clicked)
-                vbox.pack_start(btn, False, False, 0)
+                inner_box.pack_start(btn, False, False, 0)
                 display = Gdk.Display.get_default()
                 gdk_win = GdkX11.X11Window.foreign_new_for_display(display, xid)
                 thumb = None
@@ -306,7 +350,8 @@ class ScreenshotApp(Gtk.Window):
                     image_widget.set_from_pixbuf(thumb)
                 else:
                     image_widget.set_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
-                vbox.pack_start(image_widget, False, False, 0)
+                inner_box.pack_start(image_widget, False, False, 0)
+                vbox.pack_start(card_frame, True, True, 0)
                 self.flowbox.add(vbox)
         self.flowbox.show_all()
 
@@ -322,7 +367,7 @@ class ScreenshotApp(Gtk.Window):
         self.hide()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
-        time.sleep(0.5)
+        time.sleep(self.capture_delay)
         pb = Gdk.pixbuf_get_from_window(gdk_win, 0, 0, width, height)
         self.show()
         if not pb:
@@ -347,6 +392,16 @@ class ScreenshotApp(Gtk.Window):
             self.show_preview_dialog(pb_processed, title=f"{script_name} Preview")
         except Exception as e:
             print("Error loading processed image:", e)
+
+    def on_preview_processed(self, button):
+        if os.path.exists("processed.png"):
+            try:
+                pb = GdkPixbuf.Pixbuf.new_from_file("processed.png")
+                self.show_preview_dialog(pb, title="Processed Image Preview")
+            except Exception as e:
+                print("Error loading processed image:", e)
+        else:
+            print("No processed image available.")
 
     def on_process_clicked(self, button):
         self.on_run_script(button, "process_image.py", None)
