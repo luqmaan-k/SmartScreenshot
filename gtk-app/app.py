@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import gi, subprocess
+import gi, subprocess,time
 gi.require_version("Gtk", "3.0")  # or "4.0" if you prefer GTK 4
 from gi.repository import Gtk, GdkPixbuf, Gdk
 
@@ -43,11 +43,23 @@ class ScreenshotApp(Gtk.Window):
         root_window = Gdk.get_default_root_window()
         width = root_window.get_width()
         height = root_window.get_height()
-        # Get screenshot (full screen)
+
+        self.hide()
+        time.sleep(1)
         pb = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
-        # Optionally, save it to file
+        if not pb:
+            print("Screenshot failed (pb is None). Are you on X11?")
+            return
         pb.savev("screenshot.png", "png", [], [])
-        self.screenshot_image.set_from_pixbuf(pb)
+        self.show()
+        # Scale to a smaller preview, e.g. 480px wide:
+        # (preserve aspect ratio by computing new height)
+        new_width = 960
+        scale_factor = new_width / float(width)
+        new_height = int(height * scale_factor)
+
+        scaled_pb = pb.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+        self.screenshot_image.set_from_pixbuf(scaled_pb)
 
     def on_process_clicked(self, button):
         # Read the adjustable parameter (for example, brightness factor)
