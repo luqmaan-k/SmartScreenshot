@@ -11,7 +11,10 @@ class ScreenshotApp(Gtk.Window):
         self.set_default_size(1000, 700)
 
         main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.add(main_vbox)
+        scrolled_main = Gtk.ScrolledWindow()
+        scrolled_main.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scrolled_main.add(main_vbox)
+        self.add(scrolled_main)
 
         # Full-screen capture area
         full_label = Gtk.Label(label="Full Screen Capture:")
