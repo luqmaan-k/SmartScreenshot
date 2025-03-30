@@ -91,4 +91,3 @@ for box in sensitive_boxes:
 
 cv2.imwrite(output_path, image)
 print(f"Processed image saved as '{output_path}'.")
-
