@@ -20,6 +20,7 @@ def load_config():
             "override_width": "",
             "override_height": "",
             "main_border_width": "10",
+            "image_viewer": "xdg-open",
             "thumbnail_scale_divisor": "4",
             "global_preview_scale_fraction": "0.5",
             "container_border": "2",
@@ -32,6 +33,8 @@ def load_config():
         config["General"]["container_border"] = "2"
     if "capture_delay" not in config["General"]:
         config["General"]["capture_delay"] = "0.5"
+    if "image_viewer" not in config["General"]:
+        config["General"]["image_viewer"] = "xdg-open" 
     if "scripts_config" not in config["General"]:
         config["General"]["scripts_config"] = os.path.join(os.path.expanduser("~"), ".config", "smartscreenshot", "scripts.json")
     return config, config_file
@@ -144,6 +147,11 @@ class ScreenshotApp(Gtk.Window):
         refresh_btn.connect("clicked", lambda b: self.populate_window_list())
         button_box.pack_start(refresh_btn, False, False, 0)
 
+        # New: Upload Image button.
+        upload_btn = Gtk.Button(label="Upload Image")
+        upload_btn.connect("clicked", self.on_upload_image)
+        button_box.pack_start(upload_btn, False, False, 0)
+
         scrolled_list = Gtk.ScrolledWindow()
         scrolled_list.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_list.set_min_content_height(self.screen_height // 2)
@@ -174,7 +182,6 @@ class ScreenshotApp(Gtk.Window):
         scrolled_scripts.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_scripts.add(self.script_flow)
 
-        # Wrap script sections and add a button to preview processed image.
         script_top_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         script_top_box.pack_start(scrolled_scripts, True, True, 0)
         preview_proc_btn = Gtk.Button(label="Preview Processed Image")
@@ -182,13 +189,13 @@ class ScreenshotApp(Gtk.Window):
         script_top_box.pack_start(preview_proc_btn, False, False, 0)
         script_paned.pack1(script_top_box, True, False)
 
-        # Load script sections from the separate JSON file.
+        # Load script sections from the external JSON config.
         scripts = self.scripts_conf.get("scripts", [])
         if not scripts:
             scripts = [{
                 "name": "Generic Script",
                 "path": "process_image.py",
-                "parameters": [{"label": "Brightness", "default": "1.0"}]
+                "parameters": [{"label": "Custom Parameter", "default": "1.0"}]
             }]
         for script in scripts:
             name = script.get("name", "Unnamed Script")
@@ -233,7 +240,6 @@ class ScreenshotApp(Gtk.Window):
         title_label.set_markup(f"<b>{script_title}</b>")
         title_label.set_xalign(0)
         section_box.pack_start(title_label, False, False, 0)
-
         grid = Gtk.Grid(column_spacing=10, row_spacing=10)
         section_box.pack_start(grid, False, False, 0)
         section_box.param_entries = []
@@ -245,7 +251,6 @@ class ScreenshotApp(Gtk.Window):
             section_box.param_entries.append(entry)
             grid.attach(lbl, 0, i, 1, 1)
             grid.attach(entry, 1, i, 1, 1)
-
         btn = Gtk.Button(label=f"Run {script_title}")
         btn.connect("clicked", self.on_run_script, script_name, section_box)
         section_box.pack_start(btn, False, False, 0)
@@ -268,30 +273,15 @@ class ScreenshotApp(Gtk.Window):
             self.global_preview.set_from_pixbuf(scaled)
 
     def show_preview_dialog(self, pixbuf, title="Preview"):
-        dialog = Gtk.Dialog(title=title, transient_for=self, flags=0)
-        dialog.set_default_size(800, 600)
-        content_area = dialog.get_content_area()
-        content_area.set_hexpand(True)
-        content_area.set_vexpand(True)
-        dialog.original_pixbuf = pixbuf
-        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        container.set_hexpand(True)
-        container.set_vexpand(True)
-        content_area.add(container)
-        image = Gtk.Image.new_from_pixbuf(pixbuf)
-        image.set_hexpand(True)
-        image.set_vexpand(True)
-        container.pack_start(image, True, True, 0)
-        def on_size_allocate(widget, allocation):
-            orig = dialog.original_pixbuf
-            if orig:
-                new_width = allocation.width
-                new_height = allocation.height
-                scaled = orig.scale_simple(new_width, new_height, GdkPixbuf.InterpType.HYPER)
-                image.set_from_pixbuf(scaled)
-        container.connect("size-allocate", on_size_allocate)
-        dialog.show_all()
-        return dialog
+        # Instead of an internal preview dialog, we open with the system's default image viewer.
+        temp_path = "temp_preview.png"
+        pixbuf.savev(temp_path, "png", [], [])
+        try:
+            image_viewer = self.config["General"].get("image_viewer", "xdg-open")
+            subprocess.run([image_viewer, temp_path])
+        except Exception as e:
+            print("Error opening external viewer:", e)
+        return None
 
     def on_capture_full_clicked(self, button):
         self.hide()
@@ -390,14 +380,20 @@ class ScreenshotApp(Gtk.Window):
         try:
             pb_processed = GdkPixbuf.Pixbuf.new_from_file("processed.png")
             self.show_preview_dialog(pb_processed, title=f"{script_name} Preview")
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_image(pb_processed)
+            clipboard.store()
         except Exception as e:
             print("Error loading processed image:", e)
-
+        
     def on_preview_processed(self, button):
         if os.path.exists("processed.png"):
             try:
                 pb = GdkPixbuf.Pixbuf.new_from_file("processed.png")
                 self.show_preview_dialog(pb, title="Processed Image Preview")
+                clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                clipboard.set_image(pb)
+                clipboard.store()
             except Exception as e:
                 print("Error loading processed image:", e)
         else:
@@ -405,6 +401,36 @@ class ScreenshotApp(Gtk.Window):
 
     def on_process_clicked(self, button):
         self.on_run_script(button, "process_image.py", None)
+
+    def on_upload_image(self, button):
+        dialog = Gtk.FileChooserDialog(
+            title="Select an Image", parent=self,
+            action=Gtk.FileChooserAction.OPEN,
+            buttons=(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                     Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+        )
+        filter_img = Gtk.FileFilter()
+        filter_img.set_name("Image files")
+        filter_img.add_mime_type("image/png")
+        filter_img.add_mime_type("image/jpeg")
+        filter_img.add_pattern("*.png")
+        filter_img.add_pattern("*.jpg")
+        filter_img.add_pattern("*.jpeg")
+        dialog.add_filter(filter_img)
+
+        response = dialog.run()
+        if response == Gtk.ResponseType.OK:
+            selected_file = dialog.get_filename()
+            print("Selected file:", selected_file)
+            # Load the selected image.
+            pb = GdkPixbuf.Pixbuf.new_from_file(selected_file)
+            if pb:
+                self.last_pixbuf = pb
+                self.last_capture_name = os.path.basename(selected_file)
+                self.update_global_preview(pb, self.last_capture_name)
+            else:
+                print("Failed to load the selected image.")
+        dialog.destroy()
 
 if __name__ == "__main__":
     app = ScreenshotApp()
