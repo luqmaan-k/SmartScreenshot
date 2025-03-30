@@ -10,7 +10,6 @@ class ScreenshotApp(Gtk.Window):
         super().__init__(title="Screenshot App")
         self.set_default_size(1000, 700)
 
-        # Main container
         main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.add(main_vbox)
 
@@ -25,17 +24,19 @@ class ScreenshotApp(Gtk.Window):
         capture_full_btn.connect("clicked", self.on_capture_full_clicked)
         main_vbox.pack_start(capture_full_btn, False, False, 0)
 
-        # Section: Window capture list
+        # Section: Window capture list with refresh button
         list_label = Gtk.Label(label="Capture Specific Window:")
         main_vbox.pack_start(list_label, False, False, 0)
 
-        # A scrolled window to hold the list of windows
+        refresh_btn = Gtk.Button(label="Refresh Window List")
+        refresh_btn.connect("clicked", lambda b: self.populate_window_list())
+        main_vbox.pack_start(refresh_btn, False, False, 0)
+
         scrolled_list = Gtk.ScrolledWindow()
         scrolled_list.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_list.set_min_content_height(150)
         main_vbox.pack_start(scrolled_list, False, False, 0)
 
-        # Box to hold buttons for each window
         self.window_list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
         scrolled_list.add(self.window_list_box)
 
@@ -48,7 +49,6 @@ class ScreenshotApp(Gtk.Window):
         self.processed_image = Gtk.Image()
         main_vbox.pack_start(self.processed_image, True, True, 0)
 
-        # Button to process the full screenshot
         process_btn = Gtk.Button(label="Process Full Screenshot")
         process_btn.connect("clicked", self.on_process_clicked)
         main_vbox.pack_start(process_btn, False, False, 0)
@@ -65,37 +65,65 @@ class ScreenshotApp(Gtk.Window):
         windows = screen.get_windows()
         for win in windows:
             title = win.get_name()
-            # Check that the window is not minimized
+            # Filter out windows with empty title or that are minimized
             if title and not win.is_minimized():
+                # Create an HBox to hold thumbnail and a button
+                hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+
+                # Try to capture a live thumbnail (scaled to 100px wide)
+                xid = win.get_xid()
+                display = Gdk.Display.get_default()
+                # Use the correct class name for X11 windows:
+                gdk_win = GdkX11.X11Window.foreign_new_for_display(display, xid)
+                thumb = None
+                if gdk_win:
+                    geom = gdk_win.get_geometry()
+                    w_width, w_height = geom.width, geom.height
+                    # Capture thumbnail without hiding our app if possible
+                    pb = Gdk.pixbuf_get_from_window(gdk_win, 0, 0, w_width, w_height)
+                    if pb:
+                        new_width = 960
+                        scale_factor = new_width / float(w_width)
+                        new_height = int(w_height * scale_factor)
+                        thumb = pb.scale_simple(new_width, new_height, GdkPixbuf.InterpType.BILINEAR)
+                # If capturing live thumbnail failed, fallback to the window's icon (if available)
+                if not thumb:
+                    thumb = win.get_icon()  # This may be None or a generic icon
+
+                image_widget = Gtk.Image()
+                if thumb:
+                    image_widget.set_from_pixbuf(thumb)
+                else:
+                    image_widget.set_from_icon_name("application-x-executable", Gtk.IconSize.DIALOG)
+
+                hbox.pack_start(image_widget, False, False, 0)
+
+                # Create a button with the window's title
                 btn = Gtk.Button(label=title)
-                # Attach the xid as a normal attribute (avoid set_data)
-                btn.xid = win.get_xid()
+                # Store the window’s XID as a normal attribute
+                btn.xid = xid
                 btn.connect("clicked", self.on_window_button_clicked)
-                self.window_list_box.pack_start(btn, False, False, 0)
+                hbox.pack_start(btn, True, True, 0)
+
+                self.window_list_box.pack_start(hbox, False, False, 0)
         self.window_list_box.show_all()
 
     def on_capture_full_clicked(self, button):
-        # Hide the app window so it isn't captured
+        # Hide our window so it isn't captured, then process pending events
         self.hide()
-        # Process pending events so that the window is really hidden
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
-        # Wait a little more if needed
         time.sleep(0.5)
 
         root_window = Gdk.get_default_root_window()
         width = root_window.get_width()
         height = root_window.get_height()
-
         pb = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
         self.show()
-
         if not pb:
             print("Screenshot failed (pb is None). Are you on X11?")
             return
-
         pb.savev("screenshot.png", "png", [], [])
-        # Scale for preview (e.g., 960px wide)
         new_width = 960
         scale_factor = new_width / float(width)
         new_height = int(height * scale_factor)
@@ -103,30 +131,25 @@ class ScreenshotApp(Gtk.Window):
         self.full_preview.set_from_pixbuf(scaled_pb)
 
     def on_window_button_clicked(self, button):
-        xid = button.xid  # Access our attribute directly
+        xid = button.xid
         display = Gdk.Display.get_default()
-        # Use the correct class: GdkX11.X11Window
-        gdk_window = GdkX11.X11Window.foreign_new_for_display(display, xid)
-        if not gdk_window:
+        gdk_win = GdkX11.X11Window.foreign_new_for_display(display, xid)
+        if not gdk_win:
             print("Failed to get Gdk.Window for XID", xid)
             return
-
-        geom = gdk_window.get_geometry()
+        geom = gdk_win.get_geometry()
         width, height = geom.width, geom.height
 
         self.hide()
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
         time.sleep(0.5)
-        pb = Gdk.pixbuf_get_from_window(gdk_window, 0, 0, width, height)
+        pb = Gdk.pixbuf_get_from_window(gdk_win, 0, 0, width, height)
         self.show()
-
         if not pb:
             print("Failed to capture window with XID", xid)
             return
-
         pb.savev("window_screenshot.png", "png", [], [])
-        # Scale for preview (e.g., 480px wide)
         new_width = 480
         scale_factor = new_width / float(width)
         new_height = int(height * scale_factor)
