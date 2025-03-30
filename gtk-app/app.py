@@ -1,23 +1,85 @@
 #!/usr/bin/env python3
-import gi, subprocess, time
+import gi, subprocess, time, sys, os, configparser
 gi.require_version("Gtk", "3.0")
 gi.require_version("Wnck", "3.0")
 gi.require_version("GdkX11", "3.0")
 from gi.repository import Gtk, GdkPixbuf, Gdk, Wnck, GdkX11
 
+def load_config():
+    config = configparser.ConfigParser()
+    # If a config file path is provided as a command-line argument, use it.
+    if len(sys.argv) > 1:
+        config_file = sys.argv[1]
+    else:
+        home = os.path.expanduser("~")
+        config_file = os.path.join(home, ".config", "smartscreenshot", "smartscreenshot.ini")
+    # Create the config directory if it doesn't exist.
+    os.makedirs(os.path.dirname(config_file), exist_ok=True)
+    # If the file exists, read it; otherwise, create default settings.
+    if os.path.exists(config_file):
+        config.read(config_file)
+    else:
+        config["General"] = {
+            "override_width": "",           # Leave blank to use actual resolution.
+            "override_height": "",
+            "main_border_width": "10",      # Default border width.
+            "thumbnail_scale_divisor": "4", # Use screen_width // 4 for thumbnails.
+            "global_preview_scale_fraction": "0.5"  # Use half the screen width for preview.
+        }
+        with open(config_file, "w") as f:
+            config.write(f)
+    return config, config_file
+
 class ScreenshotApp(Gtk.Window):
     def __init__(self):
         super().__init__(title="Screenshot App")
         
-        # Get primary monitor resolution
+        # Load configuration.
+        self.config, self.config_file = load_config()
+        print(f"Using config file: {self.config_file}")
+        
+        # Get system resolution from primary monitor.
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor()
         geometry = monitor.get_geometry()
-        self.screen_width = geometry.width
-        self.screen_height = geometry.height
-        print(f"Screen resolution: {self.screen_width} x {self.screen_height}")
+        system_width = geometry.width
+        system_height = geometry.height
         
-        # Set default window size relative to screen resolution.
+        # Check for override settings.
+        try:
+            override_width = int(self.config["General"].get("override_width", ""))
+            override_height = int(self.config["General"].get("override_height", ""))
+            self.screen_width = override_width if override_width > 0 else system_width
+            self.screen_height = override_height if override_height > 0 else system_height
+        except ValueError:
+            self.screen_width = system_width
+            self.screen_height = system_height
+
+        print(f"Using resolution: {self.screen_width} x {self.screen_height}")
+        
+        # Get main border width from config.
+        try:
+            self.main_border_width = int(self.config["General"].get("main_border_width", "10"))
+        except ValueError:
+            self.main_border_width = 10
+        
+        # Get thumbnail scale divisor (for window list thumbnails).
+        try:
+            self.thumb_divisor = int(self.config["General"].get("thumbnail_scale_divisor", "4"))
+            if self.thumb_divisor <= 0:
+                self.thumb_divisor = 4
+        except ValueError:
+            self.thumb_divisor = 4
+        
+        # Get global preview scale fraction.
+        try:
+            self.preview_fraction = float(self.config["General"].get("global_preview_scale_fraction", "0.5"))
+            if self.preview_fraction <= 0 or self.preview_fraction > 1:
+                self.preview_fraction = 0.5
+        except ValueError:
+            self.preview_fraction = 0.5
+        
+        # Set window size to half of the (configured) resolution.
         self.set_default_size(self.screen_width // 2, self.screen_height // 2)
         
         # Global buffer for last captured screenshot and its name.
@@ -30,16 +92,18 @@ class ScreenshotApp(Gtk.Window):
         
         # --- Tab: Window Capture ---
         window_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        window_box.set_border_width(10)
+        window_box.set_border_width(self.main_border_width)
         
         # Buttons area.
         button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         window_box.pack_start(button_box, False, False, 0)
         
+        # Capture Full Screen button.
         capture_full_btn = Gtk.Button(label="Capture Full Screen")
         capture_full_btn.connect("clicked", self.on_capture_full_clicked)
         button_box.pack_start(capture_full_btn, False, False, 0)
         
+        # Refresh Window List button.
         refresh_btn = Gtk.Button(label="Refresh Window List")
         refresh_btn.connect("clicked", lambda b: self.populate_window_list())
         button_box.pack_start(refresh_btn, False, False, 0)
@@ -63,10 +127,8 @@ class ScreenshotApp(Gtk.Window):
         notebook.append_page(window_box, Gtk.Label(label="Window Capture"))
         
         # --- Tab: Scripts ---
-        # Use a vertical Paned widget for the Scripts tab.
+        # Use a vertical Paned widget to split space equally.
         script_paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        
-        # Connect size-allocate to split space equally.
         script_paned.connect("size-allocate", self.on_script_paned_allocate)
         
         # Top pane: script sections.
@@ -76,7 +138,6 @@ class ScreenshotApp(Gtk.Window):
         self.script_flow.set_selection_mode(Gtk.SelectionMode.NONE)
         self.script_flow.set_row_spacing(10)
         self.script_flow.set_column_spacing(10)
-        
         scrolled_scripts = Gtk.ScrolledWindow()
         scrolled_scripts.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
         scrolled_scripts.add(self.script_flow)
@@ -106,7 +167,7 @@ class ScreenshotApp(Gtk.Window):
         preview_scrolled.add(preview_frame)
         
         preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        preview_box.set_border_width(5)
+        preview_box.set_border_width(self.main_border_width)
         preview_frame.add(preview_box)
         
         self.last_capture_label = Gtk.Label(label="No capture yet")
@@ -119,18 +180,16 @@ class ScreenshotApp(Gtk.Window):
         preview_box.pack_start(self.global_preview, True, True, 0)
         
         script_paned.pack2(preview_scrolled, False, False)
-        
         notebook.append_page(script_paned, Gtk.Label(label="Scripts"))
         
         self.show_all()
 
     def on_script_paned_allocate(self, widget, allocation):
-        # Set the divider position to half the height of the pane.
         widget.set_position(allocation.height // 2)
 
     def create_script_section(self, script_title, script_name, parameters):
         section = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        section.set_border_width(5)
+        section.set_border_width(self.main_border_width)
         title_label = Gtk.Label()
         title_label.set_markup(f"<b>{script_title}</b>")
         title_label.set_xalign(0)
@@ -159,8 +218,7 @@ class ScreenshotApp(Gtk.Window):
         self.last_capture_label.set_text(f"Last Capture: {capture_name}")
         if pixbuf:
             orig_width = pixbuf.get_width()
-            # Scale preview to half of screen width.
-            target_width = self.screen_width // 2
+            target_width = int(self.screen_width * self.preview_fraction)
             scale_factor = target_width / float(orig_width) if orig_width else 1
             new_height = int(pixbuf.get_height() * scale_factor)
             scaled = pixbuf.scale_simple(target_width, new_height, GdkPixbuf.InterpType.HYPER)
@@ -236,7 +294,7 @@ class ScreenshotApp(Gtk.Window):
                     w_width, w_height = geom.width, geom.height
                     pb = Gdk.pixbuf_get_from_window(gdk_win, 0, 0, w_width, w_height)
                     if pb:
-                        new_width = self.screen_width // 4  # one-quarter of screen width
+                        new_width = self.screen_width // self.thumb_divisor
                         scale_factor = new_width / float(w_width) if w_width else 1
                         new_height = int(w_height * scale_factor) if w_height else 0
                         if new_width > 0 and new_height > 0:
