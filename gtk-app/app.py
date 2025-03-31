@@ -288,10 +288,25 @@ class ScreenshotApp(Gtk.Window):
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
         time.sleep(self.capture_delay)
-        root_window = Gdk.get_default_root_window()
-        width = root_window.get_width()
-        height = root_window.get_height()
-        pb = Gdk.pixbuf_get_from_window(root_window, 0, 0, width, height)
+        
+        # Check if running under Wayland.
+        if os.environ.get("WAYLAND_DISPLAY"):
+            # Use an external tool (grim) to capture a full-screen screenshot.
+            temp_path = "screenshot.png"
+            try:
+                subprocess.run(["grim", temp_path], check=True)
+                pb = GdkPixbuf.Pixbuf.new_from_file(temp_path)
+            except Exception as e:
+                print("Error capturing screenshot with grim:", e)
+                self.show()
+                return
+        else:
+            # X11: use Gdk.pixbuf_get_from_window.
+            root_window = Gdk.get_default_root_window()
+            width = root_window.get_width()
+            height = root_window.get_height()
+            pb = GdkPixbuf.Pixbuf.get_from_window(root_window, 0, 0, width, height)
+        
         self.show()
         if not pb:
             print("Screenshot failed (pb is None). Are you on X11?")
@@ -299,6 +314,7 @@ class ScreenshotApp(Gtk.Window):
         pb.savev("screenshot.png", "png", [], [])
         self.update_global_preview(pb, "Full Screen")
         self.show_preview_dialog(pb, title="Full Screen Preview")
+
 
     def populate_window_list(self):
         for child in self.flowbox.get_children():
@@ -346,6 +362,10 @@ class ScreenshotApp(Gtk.Window):
         self.flowbox.show_all()
 
     def on_window_button_clicked(self, button):
+        if os.environ.get("WAYLAND_DISPLAY"):
+            print("Window capture is not supported under Wayland.")
+            return
+        # Existing X11 code follows...
         xid = button.xid
         display = Gdk.Display.get_default()
         gdk_win = GdkX11.X11Window.foreign_new_for_display(display, xid)
@@ -358,7 +378,7 @@ class ScreenshotApp(Gtk.Window):
         while Gtk.events_pending():
             Gtk.main_iteration_do(False)
         time.sleep(self.capture_delay)
-        pb = Gdk.pixbuf_get_from_window(gdk_win, 0, 0, width, height)
+        pb = GdkPixbuf.Pixbuf.get_from_window(gdk_win, 0, 0, width, height)
         self.show()
         if not pb:
             print("Failed to capture window with XID", xid)
