@@ -20,6 +20,7 @@ def auto_blur(image, kernel_size, sigma):
     print(f"Detected {len([t for t in texts if t.strip()])} non-empty text regions.")
 
     sensitive_labels = ["password", "api key", "secret", "token", "pwd", "pass", "credential", "key"]
+
     sensitive_patterns = [
         re.compile(r'[a-fA-F0-9]{32,}'),
         re.compile(r'[A-Za-z0-9-_]{20,}'),
@@ -33,7 +34,6 @@ def auto_blur(image, kernel_size, sigma):
         if not text:
             continue
         lower_text = text.lower()
-
         if any(label in lower_text for label in sensitive_labels):
             print(f"Found potential sensitive label in text: '{texts[i]}'")
             sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
@@ -52,7 +52,12 @@ def auto_blur(image, kernel_size, sigma):
         blur_region(image, x, y, w, h, kernel_size, sigma)
     return image
 
-def manual_blur_by_keyword(image, kernel_size, sigma):
+def manual_blur_by_keywords(image, kernel_size, sigma, keywords):
+    # Convert keywords list to lower-case and trim whitespace.
+    keywords = [kw.strip().lower() for kw in keywords if kw.strip()]
+    if not keywords:
+        return image
+
     data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
     texts = data["text"]
     lefts = data["left"]
@@ -60,10 +65,7 @@ def manual_blur_by_keyword(image, kernel_size, sigma):
     widths = data["width"]
     heights = data["height"]
 
-    while True:
-        keyword = input("Enter a detail keyword to blur (e.g. 'password' or 'name') or press Enter to finish: ").strip().lower()
-        if not keyword:
-            break
+    for keyword in keywords:
         count = 0
         for i, text in enumerate(texts):
             if keyword in text.lower():
@@ -74,15 +76,11 @@ def manual_blur_by_keyword(image, kernel_size, sigma):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: {} <input_image> <output_image> [kernel_size] [sigma]".format(sys.argv[0]))
+        print("Usage: {} <input_image> <output_image> [kernel_size] [sigma] [keywords]".format(sys.argv[0]))
         sys.exit(1)
 
     image_path = sys.argv[1]
     output_path = sys.argv[2]
-
-    print("Image Path       :", image_path)
-    print("Output Image Path:", output_path)
-
     try:
         kernel_size = int(sys.argv[3]) if len(sys.argv) > 3 else 99
     except:
@@ -92,8 +90,16 @@ def main():
     except:
         sigma = 30
 
+    # Ensure kernel_size is odd.
     if kernel_size % 2 == 0:
         kernel_size += 1
+
+    # Optional keywords parameter as a comma-separated string.
+    keywords = []
+    if len(sys.argv) > 5:
+        keywords_str = sys.argv[5]
+        if keywords_str.strip():
+            keywords = keywords_str.split(',')
 
     image = cv2.imread(image_path)
     if image is None:
@@ -101,12 +107,18 @@ def main():
         sys.exit(1)
     print("Image loaded successfully.")
 
+    # Apply automatic blurring.
     auto_blur(image, kernel_size, sigma)
 
-    manual_blur_by_keyword(image, kernel_size, sigma)
+    # Apply manual blurring based on provided keywords.
+    if keywords:
+        manual_blur_by_keywords(image, kernel_size, sigma, keywords)
+    else:
+        print("No manual keywords provided; skipping manual blur.")
 
     cv2.imwrite(output_path, image)
     print(f"Processed image saved as '{output_path}'.")
 
 if __name__ == "__main__":
     main()
+
