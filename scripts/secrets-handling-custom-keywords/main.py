@@ -53,7 +53,6 @@ def auto_blur(image, kernel_size, sigma):
     return image
 
 def manual_blur_by_keywords(image, kernel_size, sigma, keywords):
-    # Convert keywords list to lower-case and trim whitespace.
     keywords = [kw.strip().lower() for kw in keywords if kw.strip()]
     if not keywords:
         return image

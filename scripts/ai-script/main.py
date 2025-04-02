@@ -1,77 +1,103 @@
+#!/usr/bin/env python3
 import cv2
 import pytesseract
 import re
-import argparse
 import os
-from PIL import Image
+import sys
 from transformers import pipeline
 
-parser = argparse.ArgumentParser(description="Blur sensitive text in an image.")
-parser.add_argument("image_path", type=str, help="Path to the input image.")
-parser.add_argument("--kernel", type=int, default=15, help="Kernel size for Gaussian blur (must be odd).")
-parser.add_argument("--sigma", type=int, default=30, help="Sigma value for Gaussian blur.")
-parser.add_argument("--expand", type=int, default=10, help="Expansion pixels for bounding box.")
-args = parser.parse_args()
-
-image = cv2.imread(args.image_path)
-if image is None:
-    print(f"Error: Could not read the image file '{args.image_path}'")
-    exit(1)
-print(f"Image '{args.image_path}' loaded successfully.")
-
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
-
-config = r'--oem 3 --psm 6'  
-data = pytesseract.image_to_data(gray, config=config, output_type=pytesseract.Output.DICT)
-texts = data["text"]
-lefts, tops, widths, heights = data["left"], data["top"], data["width"], data["height"]
-
-print(f"Detected {len([t for t in texts if t.strip()])} non-empty text regions.")
-
-sensitive_labels = ["password", "api key", "secret", "token", "pwd", "pass", "authorization", "bearer"]
-secret_patterns = [
-    re.compile(r'[A-Za-z0-9_\-]{20,}'),      
-    re.compile(r'AKIA[0-9A-Z]{16}'),        
-    re.compile(r'ghp_[A-Za-z0-9]{36}'),     
-    re.compile(r'AIza[0-9A-Za-z-_]{35}'),   
-    re.compile(r'eyJ[a-zA-Z0-9]{30,}'),     
-]
-
-sensitive_boxes = []
-for i, text in enumerate(texts):
-    text = text.lower().strip()
-    if not text:
-        continue
-
-    if any(label in text for label in sensitive_labels):
-        print(f"Found sensitive label: '{texts[i]}'")
-        sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
-
-        for j in range(i + 1, len(texts)):
-            if abs(tops[j] - tops[i]) < 15 and texts[j].strip():
-                print(f"Blurring sensitive value: '{texts[j]}'")
-                sensitive_boxes.append((lefts[j], tops[j], widths[j], heights[j]))
-                break
-
-    elif any(pattern.match(text) for pattern in secret_patterns):
-        print(f"Found potential secret: '{texts[i]}'")
-        sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
-
-def expand_box(x, y, w, h, expand, img_width, img_height):
-    new_x, new_y = max(0, x - expand), max(0, y - expand)
-    new_w, new_h = min(img_width - new_x, w + 2 * expand), min(img_height - new_y, h + 2 * expand)
+def expand_box(x, y, w, h, expand=10, img_width=None, img_height=None):
+    new_x = max(0, x - expand)
+    new_y = max(0, y - expand)
+    new_w = w + 2 * expand
+    new_h = h + 2 * expand
+    if img_width and new_x + new_w > img_width:
+        new_w = img_width - new_x
+    if img_height and new_y + new_h > img_height:
+        new_h = img_height - new_y
     return new_x, new_y, new_w, new_h
 
-for (x, y, w, h) in sensitive_boxes:
-    x, y, w, h = expand_box(x, y, w, h, args.expand, image.shape[1], image.shape[0])
-    roi = image[y:y+h, x:x+w]
-    k = max(3, args.kernel | 1) 
-    blurred_roi = cv2.GaussianBlur(roi, (k, k), args.sigma)
-    image[y:y+h, x:x+w] = blurred_roi
+def blur_region(img, x, y, w, h, kernel_size, sigma, expand=15):
+    """Blurs a region with Gaussian blur."""
+    img_h, img_w = img.shape[:2]
+    x, y, w, h = expand_box(x, y, w, h, expand, img_w, img_h)
+    roi = img[y:y+h, x:x+w]
+    k = max(15, (min(w, h) // 2) | 1)  # Ensure kernel size is odd
+    blurred_roi = cv2.GaussianBlur(roi, (kernel_size, kernel_size), sigma)
+    img[y:y+h, x:x+w] = blurred_roi
 
-output_path = os.path.basename(args.image_path)
-print(output_path)
-cv2.imwrite(output_path, image)
-os.replace(output_path, args.image_path)
-print(f"Image saved and replaced as '{args.image_path}'.")
+def main():
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <input_image> <output_image> [kernel_size] [sigma]")
+        sys.exit(1)
+    
+    image_path = sys.argv[1]
+    output_path = sys.argv[2]
+    kernel_size = int(sys.argv[3]) if len(sys.argv) > 3 else 99
+    sigma = float(sys.argv[4]) if len(sys.argv) > 4 else 30
+    
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Could not read the image file '{image_path}'")
+        sys.exit(1)
+    
+    print("Image loaded successfully.")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    
+    data = pytesseract.image_to_data(gray, config='--oem 3 --psm 6', output_type=pytesseract.Output.DICT)
+    texts, lefts, tops, widths, heights = data["text"], data["left"], data["top"], data["width"], data["height"]
+    
+    print(f"Detected {len([t for t in texts if t.strip()])} non-empty text regions.")
+    sensitive_labels = ["password", "api key", "secret", "token", "pwd", "pass", "authorization", "bearer"]
+    secret_patterns = [
+        re.compile(r'[A-Za-z0-9_\-]{20,}'),
+        re.compile(r'AKIA[0-9A-Z]{16}'),
+        re.compile(r'ghp_[A-Za-z0-9]{36}'),
+        re.compile(r'AIza[0-9A-Za-z-_]{35}'),
+        re.compile(r'eyJ[a-zA-Z0-9]{30,}')
+    ]
+    
+    sensitive_boxes = []
+    for i, text in enumerate(texts):
+        text = text.strip().lower()
+        if not text:
+            continue
+        
+        if any(label in text for label in sensitive_labels):
+            print(f"Found potential sensitive label: '{texts[i]}'")
+            sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
+            
+            for j in range(i + 1, len(texts)):
+                if abs(tops[j] - tops[i]) < 15 and texts[j].strip():
+                    print(f"Blurring subsequent text as sensitive value: '{texts[j]}'")
+                    sensitive_boxes.append((lefts[j], tops[j], widths[j], heights[j]))
+                    break
+        elif any(pattern.match(text) for pattern in secret_patterns):
+            print(f"Found potential secret: '{texts[i]}'")
+            sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
+    
+    classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
+    for i, text in enumerate(texts):
+        text = text.strip()
+        if not text or any((lefts[i], tops[i], widths[i], heights[i]) == box for box in sensitive_boxes):
+            continue
+        result = classifier(text, candidate_labels=["password", "normal text"])
+        score = result["scores"][0] if result["labels"][0] == "password" else 1 - result["scores"][0]
+        if result["labels"][0] == "password" and score > 0.7:
+            print(f"Classified '{text}' as sensitive with score {score:.3f}")
+            sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
+    
+    print(f"Number of sensitive regions detected: {len(sensitive_boxes)}")
+    
+    for box in sensitive_boxes:
+        blur_region(image, *box, kernel_size, sigma)
+    
+    cv2.imwrite(output_path, image)
+    print(f"Processed image saved as '{output_path}'.")
+    
+if __name__ == "__main__":
+    main()
