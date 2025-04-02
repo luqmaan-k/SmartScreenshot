@@ -27,14 +27,15 @@ def blur_region(img, x, y, w, h, kernel_size, sigma, expand=15):
     img[y:y+h, x:x+w] = blurred_roi
 
 def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <input_image> <output_image> [kernel_size] [sigma]")
+    if len(sys.argv) < 4:
+        print(f"Usage: {sys.argv[0]} <input_image> <output_image> <sensitive_labels_comma_separated> [kernel_size] [sigma]")
         sys.exit(1)
     
     image_path = sys.argv[1]
     output_path = sys.argv[2]
-    kernel_size = int(sys.argv[3]) if len(sys.argv) > 3 else 99
-    sigma = float(sys.argv[4]) if len(sys.argv) > 4 else 30
+    sensitive_labels = sys.argv[3].split(",")
+    kernel_size = int(sys.argv[4]) if len(sys.argv) > 4 else 99
+    sigma = float(sys.argv[5]) if len(sys.argv) > 5 else 30
     
     if kernel_size % 2 == 0:
         kernel_size += 1
@@ -52,7 +53,6 @@ def main():
     texts, lefts, tops, widths, heights = data["text"], data["left"], data["top"], data["width"], data["height"]
     
     print(f"Detected {len([t for t in texts if t.strip()])} non-empty text regions.")
-    sensitive_labels = ["password", "api key", "secret", "token", "pwd", "pass", "authorization", "bearer"]
     secret_patterns = [
         re.compile(r'[A-Za-z0-9_\-]{20,}'),
         re.compile(r'AKIA[0-9A-Z]{16}'),
@@ -67,7 +67,7 @@ def main():
         if not text:
             continue
         
-        if any(label in text for label in sensitive_labels):
+        if any(label.lower() in text for label in sensitive_labels):
             print(f"Found potential sensitive label: '{texts[i]}'")
             sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
             
@@ -101,3 +101,4 @@ def main():
     
 if __name__ == "__main__":
     main()
+
