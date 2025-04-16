@@ -20,6 +20,7 @@ SmartScreenshot is a GTK-based application for capturing screenshots (full-scree
   (Make sure Tesseract OCR is installed and available in your PATH or specify its full path in your environment.)
 - Grim (for Wayland full-screen capture)
 - A Linux system (for xdg-open and other Linux utilities)
+- sudo dnf install gnome-screenshot
 
 ## Installation
 

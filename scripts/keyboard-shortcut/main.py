@@ -1,9 +1,11 @@
-#!/usr/bin/env python3
+#/user/bin/env python3
 import cv2
 import pytesseract
 import re
-import os
-import sys
+import numpy as np
+import pyautogui
+import datetime
+from pynput import keyboard
 
 def blur_region(image, x, y, w, h, kernel_size, sigma):
     roi = image[y:y+h, x:x+w]
@@ -18,16 +20,15 @@ def auto_blur(image, kernel_size, sigma):
     widths = data["width"]
     heights = data["height"]
     print(f"Detected {len([t for t in texts if t.strip()])} non-empty text regions.")
-
+    
     sensitive_labels = ["password", "api key", "secret", "token", "pwd", "pass", "credential", "key"]
-
     sensitive_patterns = [
         re.compile(r'[a-fA-F0-9]{32,}'),
         re.compile(r'[A-Za-z0-9-_]{20,}'),
         re.compile(r'eyJ[A-Za-z0-9-_]+\.eyJ[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+'),
         re.compile(r'[A-Za-z0-9+/]{20,}=*'),
     ]
-
+    
     sensitive_boxes = []
     for i in range(len(texts)):
         text = texts[i].strip()
@@ -45,78 +46,38 @@ def auto_blur(image, kernel_size, sigma):
         elif any(pattern.search(text) for pattern in sensitive_patterns):
             print(f"Found potential standalone secret: '{text}'")
             sensitive_boxes.append((lefts[i], tops[i], widths[i], heights[i]))
-
+    
     print(f"Number of sensitive boxes detected: {len(sensitive_boxes)}")
     for box in sensitive_boxes:
         x, y, w, h = box
         blur_region(image, x, y, w, h, kernel_size, sigma)
     return image
 
-def manual_blur_by_keywords(image, kernel_size, sigma, keywords):
-    keywords = [kw.strip().lower() for kw in keywords if kw.strip()]
-    if not keywords:
-        return image
+def capture_and_process(kernel_size, sigma):
+    print("Hotkey pressed! Capturing screenshot...")
+    screenshot = pyautogui.screenshot()
+    image = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+    
+    processed_image = auto_blur(image, kernel_size, sigma)
+    
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = f"screenshot_blurred_{timestamp}.png"
+    cv2.imwrite(output_path, processed_image)
+    print(f"Processed screenshot saved as '{output_path}'.")
 
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
-    texts = data["text"]
-    lefts = data["left"]
-    tops = data["top"]
-    widths = data["width"]
-    heights = data["height"]
-
-    for keyword in keywords:
-        count = 0
-        for i, text in enumerate(texts):
-            if keyword in text.lower():
-                blur_region(image, lefts[i], tops[i], widths[i], heights[i], kernel_size, sigma)
-                count += 1
-        print(f"Blurred {count} regions containing '{keyword}'.")
-    return image
-
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: {} <input_image> <output_image> [kernel_size] [sigma] [keywords]".format(sys.argv[0]))
-        sys.exit(1)
-
-    image_path = sys.argv[1]
-    output_path = sys.argv[2]
-    try:
-        kernel_size = int(sys.argv[3]) if len(sys.argv) > 3 else 99
-    except:
-        kernel_size = 99
-    try:
-        sigma = float(sys.argv[4]) if len(sys.argv) > 4 else 30
-    except:
-        sigma = 30
-
-    # Ensure kernel_size is odd.
+def on_activate():
+    kernel_size = 99
+    sigma = 30.0
     if kernel_size % 2 == 0:
         kernel_size += 1
+    capture_and_process(kernel_size, sigma)
 
-    # Optional keywords parameter as a comma-separated string.
-    keywords = []
-    if len(sys.argv) > 5:
-        keywords_str = sys.argv[5]
-        if keywords_str.strip():
-            keywords = keywords_str.split(',')
+hotkeys = keyboard.GlobalHotKeys({
+    '<ctrl>+<shift>+h': on_activate
+})
 
-    image = cv2.imread(image_path)
-    if image is None:
-        print(f"Error: Could not read the image file '{image_path}'")
-        sys.exit(1)
-    print("Image loaded successfully.")
+print("Press CTRL+SHIFT+H to capture and process a screenshot.")
+print("Press CTRL+C to exit.")
 
-    # Apply automatic blurring.
-    auto_blur(image, kernel_size, sigma)
-
-    # Apply manual blurring based on provided keywords.
-    if keywords:
-        manual_blur_by_keywords(image, kernel_size, sigma, keywords)
-    else:
-        print("No manual keywords provided; skipping manual blur.")
-
-    cv2.imwrite(output_path, image)
-    print(f"Processed image saved as '{output_path}'.")
-
-if __name__ == "__main__":
-    main()
+hotkeys.start()
+hotkeys.join()
